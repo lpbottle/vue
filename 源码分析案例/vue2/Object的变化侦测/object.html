@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Object的变化侦测</title>
+</head>
+
+<body>
+    <p>没有页面内容，打开控制台调试</p>
+    <script>
+        // 删除依赖
+        function remove(arr, item) {
+            if (arr.length) {
+                const index = arr.indexOf(item)
+
+                if (index > -1) {
+                    return arr.splice(item, 1)
+                }
+            }
+        }
+
+        // 管理依赖
+        class Dep {
+            constructor() {
+                // 定义一个 subs 数组，用来存放 Watcher 实例
+                this.subs = []
+            }
+
+            // 添加依赖
+            addSub(sub) {
+                this.subs.push(sub)
+            }
+            
+            // 删除依赖
+            removeSub(sub) {
+                remove(this.subs, sub)
+            }
+
+            depend() {
+                if (window.target) {
+                    this.addSub(window.target)
+                }
+            }
+
+            // 向依赖发送通知
+            notify() {
+                // 复制一份，避免 this.subs 数组元素受影响
+                const subs = this.subs.slice()
+
+                for (let i = 0; i < subs.length; i++) {
+                    subs[i].update()
+                }
+            }
+        }
+        
+        /**
+          * Observer类会附加到每一个被侦测的object上。
+          * 一旦被附加上，Observer会将object的所有属性转换为getter/setter的形式
+          * 来收集属性的依赖，并且当属性发生变化时会通知这些依赖
+          */
+       class Observer {
+           constructor(value) {
+               this.value = value
+
+               if (!Array.isArray(value)) {
+                   this.walk(value)
+               }
+           }
+           
+           /**
+            * walk会将每一个属性都转换成getter/setter的形式来侦测变化
+            * 这个方法只有在数据类型为Object时被调用
+            */
+           walk(obj) {
+               const keys = Object.keys(obj)
+
+               for (let i = 0; i < keys.length; i++) {
+                   let key = keys[i],
+                       val = obj[key]
+
+                   defineReactive(obj, key, val)
+               }
+           }
+        }
+
+        // 封装 Object.defineProperty，把普通对象转化为响应式对象
+        function defineReactive(data, key, val) {
+            if (typeof val === 'object') {
+                new Observer(val)
+            }
+
+            let dep = new Dep()
+
+            Object.defineProperty(data, key, {
+                enumerable: true,
+                configurable: true,
+
+                get: function() {
+                    dep.depend() // 收集依赖
+                    return val
+                },
+
+                set: function(newVal) {
+                    if (val === newVal) {
+                        return
+                    }
+                    
+                    val = newVal
+                    dep.notify() // 向依赖派发通知
+                }
+            })
+        }
+
+        // 解析简单路径
+        function parsePath(path) {
+            const bailRE = /[^\w.$]/
+
+            if (bailRE.test(path)) {
+                return
+            }
+
+            const segments = path.split('.')
+
+            return function(obj) {
+                for (let i = 0, len = segments.length; i < len; i++) {
+                    if (!obj) return
+
+                    obj = obj[segments[i]]
+                }
+
+                return obj
+            }
+        }
+
+        // 中介角色，数据变化时通知它，它再通知其它地方
+        class Watcher {
+            constructor(vm, expOrFn, cb) {
+                this.vm = vm
+
+                // 执行this.getter()，就可以读取o.b.c的内容
+                this.getter = parsePath(expOrFn)
+                this.cb = cb
+                this.value = this.get()
+            }
+
+            get() {
+                window.target = this
+                let value = this.getter(this.vm)
+                window.target = undefined
+                return value
+            }
+
+            update() {
+                const oldValue = this.value
+                this.value = this.get()
+                this.cb(this.value, oldValue)
+            }
+        }
+
+        let o = {
+            a: 1,
+            b: {
+                c: 2
+            },
+            d: 3
+        }
+
+        // 把对象o转化为响应式数据
+        const O = new Observer(o)
+
+        let watch = new Watcher(o, 'b.c', function(val, oldValue) {
+            console.log('新值：' + val)
+            console.log('旧值：' + oldValue)
+        })
+
+        // 监听的 o.b.c 值发生变化，会触发 Watcher 回调
+        o.b.c = 7
+    </script>
+</body>
+
+</html>
