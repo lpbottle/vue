@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Array的变化侦测</title>
+    <style>
+        body {
+            font-size: 15px;
+        }
+
+        .red {
+            color: red;
+        }
+    </style>
+</head>
+<body>
+    <b>没有页面内容，打开控制台调试</b>
+<pre>
+1. 获取 Array.prototype
+2. 创建一个空对象 arrayMethods，它的 prototype 指向 Array.prototype
+3. 找出 Array.prototype 中 7 个可以改变数组自身内容的方法
+4. 遍历这 7 个方法，挨个添加到 arrayMethods 中，定义为响应式数据，通过 getter/setter 访问
+5. 把对象中的数组属性定义为响应式数据
+    1). 把数组转化为 Observer
+        a. 判断数组是否有 __ob__ 属性，如果有，直接返回
+        b. 如果没有 __ob__ 属性，则创建 Observer 实例
+            i. 创建 value 属性，保存数组的值
+            ii. 创建 dep 属性，用于保存依赖列表
+            iii. 给数组添加 __ob__ 属性，值为当前 Observer 实例
+            iv. 改变数组的 __proto__ 属性值，让它指向 arrayMethods，以覆盖原始的数组原型
+            v. 递归处理数组的子元素，如果子元素为数组，把它变更为响应式数据
+
+    2). 把属性定义为响应式数据
+</pre>
+    <section>
+        <h2>存在的问题</h2>
+        <p>因为对 Array 的变化侦测是通过拦截原型的方式实现的，所以：</p>
+        <p class="red">o.list[0] = 5 无法拦截</p>
+        <p class="red">o.list.length = 0 无法拦截</p>
+    </section>
+    <script>
+        const arrayProto = Array.prototype,
+            arrayMethods = Object.create(arrayProto),
+            hasProto = '__proto__' in {},
+            // 可以改变数组自身内容的7个方法
+            methods = ['push', 'pop', 'shift', 'unshift', 'reverse', 'sort', 'splice']
+
+        let arrayKeys = []
+
+        // 管理依赖
+        class Dep {
+            constructor() {
+                // 定义一个 subs 数组，用来存放 Watcher 实例
+                this.subs = []
+            }
+
+            // 添加依赖
+            addSub(sub) {
+                this.subs.push(sub)
+            }
+            
+            // 删除依赖
+            removeSub(sub) {
+                remove(this.subs, sub)
+            }
+
+            depend() {
+                if (window.target) {
+                    this.addSub(window.target)
+                }
+            }
+
+            // 向依赖发送通知
+            notify() {
+                // 复制一份，避免 this.subs 数组元素受影响
+                const subs = this.subs.slice()
+
+                for (let i = 0; i < subs.length; i++) {
+                    subs[i].update()
+                }
+            }
+        }
+
+        function def(obj, key, val, enumerable) {
+            Object.defineProperty(obj, key, {
+                value: val,
+                enumerable: !!enumerable,
+                writable: true,
+                configurable: true
+            })
+        }
+
+        function protoAugment(target, src, keys) {
+            target.__proto__ = src
+        }
+
+        function copyAugment(target, src, keys) {
+            for (let i = 0, len = keys.length; i < len; i++) {
+                const key = keys[i]
+                def(target, key, src[key])
+            }
+        }
+
+        methods.forEach(method => {
+            // 缓存原始方法
+            const original = arrayProto[method]
+
+            def(arrayMethods, method, function mutator(...args) {
+                const result = original.apply(this, args),
+                    ob = this.__ob__ // 获取 Observer 实例
+                
+                let inserted
+
+                switch(method) {
+                case 'push':
+                case 'unshift':
+                    inserted = args
+                    break
+                case 'splice':
+                    /**
+                     * 为什么参数是2呢，因为 splice 的第 3 个参数开始为新增元素，例如：
+                     * let colors = ["red", "green", "blue"];
+                     * removed = colors.splice(1, 1, "red", "purple"); // 插入两个值，删除一个元素
+                     * 如上，从下标为 2 开始的参数，为 splice 的插入元素(即新增)
+                     */
+                    inserted = args.slice(2)
+                }
+
+                // 使用 Observer 侦测新增元素
+                if (inserted) {
+                    ob.observeArray(inserted)
+                }
+
+                // 向数组的依赖发送通知
+                ob.dep.notify()
+
+                return result
+            })
+        })
+
+        arrayKeys = Object.getOwnPropertyNames(arrayMethods)
+
+        /**
+         * 尝试为 value 创建一个 Observer 实例，
+         * 如果创建成功，直接返回新创建的 Observer 实例。
+         * 如果 value 已经存在一个 Observer 实例，则直接返回它
+         */
+        function observe(value) {
+            if (typeof value !== 'object') {
+                return
+            }
+
+            let ob
+
+            if (value.hasOwnProperty('__ob') && value.__ob__ instanceof Observer) {
+                ob = value.__ob__
+            } else {
+                ob = new Observer(value)
+            }
+
+            return ob
+        }
+
+        // 拦截器
+        class Observer {
+            constructor(value) {
+                this.value = value
+
+                // 用于保存依赖列表
+                this.dep = new Dep()
+
+                // 在 value 上新增属性 __ob__，值为当前 Observer 实例
+                def(value, '__ob__', this)
+
+                if (Array.isArray(value)) {
+                    // 判断
+                    const augment = hasProto
+                        ? protoAugment
+                        : copyAugment
+
+                    augment(value, arrayMethods, arrayKeys)
+                    this.observeArray(value)
+                } else {
+                    this.walk(value)
+                }
+            }
+
+            /**
+             * 循环数组的每一项，将它的所有子数据都转换成响应式数据
+             * 循环
+             */
+            observeArray(items) {
+                for (let i = 0, l = items.length; i < l; i++) {
+                    observe(items[i])
+                }
+            }
+
+            /**
+            * walk会将每一个属性都转换成getter/setter的形式来侦测变化
+            * 这个方法只有在数据类型为Object时被调用
+            */
+            walk(obj) {
+                const keys = Object.keys(obj)
+
+                for (let i = 0; i < keys.length; i++) {
+                    let key = keys[i],
+                        val = obj[key]
+
+                    defineReactive(obj, key, val)
+                }
+            }
+        }
+
+        // 封装 Object.defineProperty，把数组转化为响应式对象
+        function defineReactive(data, key, val) {
+            let childOb = observe(val) // 创建 Observer 实例
+
+            Object.defineProperty(data, key, {
+                enumerable: true,
+                configurable: true,
+
+                get: function() {
+                    // 收集Array的依赖
+                    if (childOb) {
+                        childOb.dep.depend()
+                    }
+
+                    return val
+                },
+
+                set: function(newVal) {
+                    if (val === newVal) return
+                    val = newVal
+                }
+            })
+        }
+
+        let o = {
+            list: [1, 2, 3, 4, 5, [6, 7]]
+        }
+
+        defineReactive(o, 'list', o.list);
+
+        o.list.push(8)
+        o.list[5].splice(1, 1, 8)
+    </script>
+</body>
+</html>
